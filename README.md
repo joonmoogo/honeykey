@@ -42,7 +42,7 @@ You can't review every token your agent reads. You *can* make exfiltration loud.
 
 ## How it works
 
-1. **Plant.** `honeykey init` writes realistic, random, worthless credentials (AWS, GitHub, OpenAI, Anthropic, Stripe, Slack, Postgres URL, JWT secret) to bait files like `.env.production.local`, and makes sure they are git-ignored.
+1. **Plant.** `honeykey init` writes realistic, random, worthless credentials (AWS, GitHub, OpenAI, Anthropic, Stripe, Slack, Postgres URL, JWT secret) to bait files like `.env.backup`, and makes sure they are git-ignored. honeykey never plants into files that frameworks load automatically (`.env`, `.env.local`, `.env.production[.local]`…), so a decoy can't replace real config in a build.
 2. **Guard.** A Claude Code `PreToolUse` hook inspects **every** tool call (Bash, WebFetch, Write, MCP tools…) before it runs. If a decoy appears in it in any form, the call is blocked and the agent is told why.
 3. **Alert.** Each trip is logged to `.honeykey/alerts.jsonl`. `honeykey alerts` shows them.
 
@@ -196,7 +196,7 @@ Use it alongside a sandbox and a secret scanner. A sandbox limits where secrets 
 ## FAQ
 
 **False positives?**
-A decoy is 24–99 random characters that exist nowhere but your bait files. Matches use the random core, never the well-known prefix (`ghp_`, `sk-proj-`…), and partial matching needs a 12-character run. Ordinary code, logs and base64 don't trip it. The one way to trip it legitimately is to `cat .env.production.local` and paste it somewhere yourself, and that is worth a warning anyway.
+A decoy is 24–99 random characters that exist nowhere but your bait files. Matches use the random core, never the well-known prefix (`ghp_`, `sk-proj-`…), and partial matching needs a 12-character run. Ordinary code, logs and base64 don't trip it. The one way to trip it legitimately is to `cat .env.backup` and paste it somewhere yourself, and that is worth a warning anyway.
 
 **Performance?**
 `init` writes a self-contained 15 KB hook to `.honeykey/guard.mjs`, so no `npx` or package resolution happens per tool call. A full hook invocation, Node startup included, takes about 26 ms. Detection itself is about 0.1 ms for a typical tool call and about 15 ms for a 200 KB payload (Apple M4 Pro, Node 24).

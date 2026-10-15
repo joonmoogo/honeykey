@@ -40,9 +40,9 @@ test('init: bait, state, gitignore, guard bundle, merged Claude settings; idempo
     assert.equal(r1.status, 0, r1.stderr);
     const state = json(join(d, '.honeykey', 'state.json'));
     assert.equal(state.decoys.length, 8);
-    assert.deepEqual(state.baitFiles, ['.env.production.local']);
+    assert.deepEqual(state.baitFiles, ['.env.backup']);
     assert.equal(state.mode, 'block');
-    const bait = readFileSync(join(d, '.env.production.local'), 'utf8');
+    const bait = readFileSync(join(d, '.env.backup'), 'utf8');
     for (const x of state.decoys) assert.ok(bait.includes(`${x.env}=${x.value}`));
     for (const x of state.decoys) assert.ok(!r1.stdout.includes(x.value), 'init output must mask decoys');
     assert.ok(existsSync(join(d, '.honeykey', 'guard.mjs')));
@@ -50,7 +50,7 @@ test('init: bait, state, gitignore, guard bundle, merged Claude settings; idempo
     const gi = readFileSync(join(d, '.gitignore'), 'utf8');
     assert.match(gi, /^node_modules$/m);
     assert.match(gi, /^\.honeykey\/$/m);
-    assert.match(gi, /^\.env\.production\.local$/m);
+    assert.match(gi, /^\.env\.backup$/m);
 
     const s1 = json(join(d, '.claude', 'settings.json'));
     assert.equal(s1.model, 'opus');
@@ -70,7 +70,7 @@ test('init: bait, state, gitignore, guard bundle, merged Claude settings; idempo
     assert.equal(run(d, ['init', '--rotate']).status, 0);
     const rotated = json(join(d, '.honeykey', 'state.json')).decoys;
     assert.notEqual(rotated[0].value, state.decoys[0].value);
-    assert.ok(readFileSync(join(d, '.env.production.local'), 'utf8').includes(rotated[0].value));
+    assert.ok(readFileSync(join(d, '.env.backup'), 'utf8').includes(rotated[0].value));
     assert.equal(json(join(d, '.claude', 'settings.json')).hooks.PreToolUse.length, 2);
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
@@ -78,13 +78,13 @@ test('init: bait, state, gitignore, guard bundle, merged Claude settings; idempo
 test('init never overwrites an existing env file', () => {
   const d = tmp();
   try {
-    writeFileSync(join(d, '.env.production.local'), 'REAL_SECRET=keep-me\n');
+    writeFileSync(join(d, '.env.backup'), 'REAL_SECRET=keep-me\n');
     const r = run(d, ['init', '--agents', 'claude']);
     assert.equal(r.status, 0, r.stderr);
-    assert.equal(readFileSync(join(d, '.env.production.local'), 'utf8'), 'REAL_SECRET=keep-me\n');
-    assert.deepEqual(json(join(d, '.honeykey', 'state.json')).baitFiles, ['.env.backup']);
+    assert.equal(readFileSync(join(d, '.env.backup'), 'utf8'), 'REAL_SECRET=keep-me\n');
+    assert.deepEqual(json(join(d, '.honeykey', 'state.json')).baitFiles, ['.env.production.bak']);
     assert.match(r.stdout, /already exists/);
-    assert.ok(existsSync(join(d, '.env.backup')));
+    assert.ok(existsSync(join(d, '.env.production.bak')));
   } finally { rmSync(d, { recursive: true, force: true }); }
 });
 
@@ -111,7 +111,7 @@ test('init --agents cursor,gemini --mode warn; status; uninstall restores config
     const u = run(d, ['uninstall']);
     assert.equal(u.status, 0, u.stderr);
     assert.ok(!existsSync(join(d, '.honeykey')));
-    assert.ok(!existsSync(join(d, '.env.production.local')));
+    assert.ok(!existsSync(join(d, '.env.backup')));
     assert.ok(!existsSync(join(d, '.cursor', 'hooks.json')));
     assert.ok(!existsSync(join(d, '.claude', 'settings.json')));
     assert.deepEqual(json(join(d, '.gemini', 'settings.json')), { theme: 'dark' });
@@ -207,4 +207,26 @@ test('hook command: exit 0 when guard is missing (fresh clone), exit code passes
   writeFileSync(join(dir, '.honeykey/guard.mjs'), 'process.exit(2)');
   assert.equal(spawnSync('sh', ['-c', cmd], { env, input: '{}' }).status, 2);
   void execFileSync;
+});
+
+test('never plants in env files that frameworks auto-load; migrates 0.1.0 bait', async () => {
+  const { init, isLoadedEnvFile } = await import('../src/init.mjs');
+  const { mkdtempSync, writeFileSync, existsSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { generateDecoys, toDotenv, saveState } = await import('../src/core.mjs');
+  for (const f of ['.env', '.env.local', '.env.production', '.env.production.local', '.env.development.local', '.env.test']) assert.ok(isLoadedEnvFile(f), f);
+  for (const f of ['.env.backup', '.env.production.bak', '.env.old', '.env.save']) assert.ok(!isLoadedEnvFile(f), f);
+
+  const d = mkdtempSync(join(tmpdir(), 'hk-loaded-'));
+  assert.throws(() => init({ cwd: d, agents: ['claude'], bait: '.env.production.local' }), /refusing/);
+
+  const d2 = mkdtempSync(join(tmpdir(), 'hk-migrate-'));
+  const decoys = generateDecoys();
+  writeFileSync(join(d2, '.env.production.local'), toDotenv(decoys));
+  saveState(d2, { version: '0.1.0', decoys, baitFiles: ['.env.production.local'], mode: 'block' });
+  const r = init({ cwd: d2, agents: ['claude'] });
+  assert.deepEqual(r.migrated, ['.env.production.local']);
+  assert.ok(!existsSync(join(d2, '.env.production.local')));
+  assert.ok(readFileSync(join(d2, '.env.backup'), 'utf8').includes(decoys[0].value));
 });

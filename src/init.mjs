@@ -1,14 +1,19 @@
 // honeykey init/uninstall — plants decoys, bait files, the bundled hook and the
 // per-agent integrations. Pure-ish: returns a report object; cli.mjs renders it.
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { VERSION, STATE_DIR, generateDecoys, toDotenv, loadState, saveState } from './core.mjs';
 import { INTEGRATIONS, GUARD_FILE, detectAgents } from './integrations.mjs';
 
 const SRC = dirname(fileURLToPath(import.meta.url));
-export const DEFAULT_BAIT = '.env.production.local';
-const FALLBACK_BAITS = ['.env.backup', '.env.production.bak', '.env.prod.local', '.env.old', '.env.live.local'];
+export const DEFAULT_BAIT = '.env.backup';
+const FALLBACK_BAITS = ['.env.production.bak', '.env.old', '.env.save', '.env.backup.old'];
+
+// Frameworks auto-load these (Next.js, Vite, CRA, dotenv-flow, Rails…). A decoy in one of them
+// would silently replace real config in a build, so never plant there.
+const LOADED_BY_FRAMEWORKS = /^\.env(\.(local|development|dev|production|prod|test|staging|preview))?(\.local)?$/;
+export function isLoadedEnvFile(name) { return LOADED_BY_FRAMEWORKS.test(name); }
 const GITIGNORE_HEADER = '# honeykey — decoy secrets & local state (never commit)';
 
 // ---- guard bundle -------------------------------------------------------
@@ -116,9 +121,22 @@ export function init({ cwd, agents, mode, bait, rotate = false }) {
   const agentList = agents?.length ? agents : prev?.agents?.length ? prev.agents : detectAgents(cwd);
   for (const a of agentList) if (!INTEGRATIONS[a]) throw new Error(`unknown agent "${a}" (supported: ${Object.keys(INTEGRATIONS).join(', ')})`);
 
+  if (bait && isLoadedEnvFile(basename(bait))) {
+    throw new Error(`refusing to plant decoys in ${bait}: frameworks (Next.js, Vite, dotenv-flow…) load it automatically, so fake keys would replace real config. Pick another name, e.g. .env.backup`);
+  }
+
   const reused = !!(prev?.decoys?.length && !rotate);
   const decoys = reused ? prev.decoys : generateDecoys();
-  const ours = prev?.baitFiles || [];
+  // honeykey 0.1.0 planted .env.production.local, which Next.js/Vite load in production builds.
+  // Remove such bait (only if it still holds nothing but our decoys) and plant a safe one instead.
+  const migrated = [];
+  const ours = (prev?.baitFiles || []).filter((f) => {
+    if (!isLoadedEnvFile(basename(f))) return true;
+    const p = join(cwd, f);
+    if (existsSync(p) && readFileSync(p, 'utf8') === toDotenv(prev.decoys)) rmSync(p);
+    migrated.push(f);
+    return false;
+  });
 
   // bait file(s): keep previously planted ones, plus the requested one
   const baitFiles = [];
@@ -154,7 +172,7 @@ export function init({ cwd, agents, mode, bait, rotate = false }) {
     catch (e) { return { id, label: INTEGRATIONS[id].label, file: INTEGRATIONS[id].file(cwd), error: e.message }; }
   });
 
-  return { state, reused, rotated: rotate && !!prev, firstRun: !prev, corrupt, renamed, guardFile, ignored, integrations };
+  return { state, reused, rotated: rotate && !!prev, firstRun: !prev, corrupt, renamed, migrated, guardFile, ignored, integrations };
 }
 
 // ---- uninstall ----------------------------------------------------------

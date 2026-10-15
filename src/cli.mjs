@@ -131,6 +131,7 @@ function cmdInit(argv, cwd) {
   if (r.corrupt) out(warnLine(`existing ${STATE_DIR}/state.json was unreadable — generated a fresh one`));
   const n = state.decoys.length;
   out(step(r.rotated ? `Rotated ${n} decoy secrets` : r.reused ? `${n} decoy secrets in place` : `Planted ${n} decoy secrets`, state.baitFiles.join(', ')));
+  if (r.migrated?.length) out(warnLine(`moved decoys out of ${r.migrated.map((f) => c.bold(f)).join(', ')} (frameworks load it in production builds)`));
   if (r.renamed) out(warnLine(`${c.bold(r.renamed.wanted)} already exists — left it untouched, used ${c.bold(r.renamed.used)} instead`));
   const kb = (statSafe(r.guardFile) / 1024).toFixed(1);
   out(step('Bundled hook', `${rel(cwd, r.guardFile)} (${kb} KB, zero deps)`));

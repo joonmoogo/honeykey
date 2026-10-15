@@ -56,7 +56,7 @@ test('WebFetch / MCP tools are guarded too', () => {
 });
 
 test('Read tool → exit 0 even if input mentions a decoy', () => {
-  assert.equal(hook(guard, claude('Read', { file_path: join(dir, '.env.production.local') })).status, 0);
+  assert.equal(hook(guard, claude('Read', { file_path: join(dir, '.env.backup') })).status, 0);
   assert.equal(hook(guard, claude('Grep', { pattern: gh.value })).status, 0);
 });
 
