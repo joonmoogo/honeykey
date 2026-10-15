@@ -1,0 +1,14 @@
+{
+  "name": "honeykey",
+  "version": "0.1.0",
+  "description": "Honeypot secrets for AI coding agents. Plant fake keys, catch prompt-injection exfiltration the moment it happens — even base64'd, reversed or split.",
+  "type": "module",
+  "bin": { "honeykey": "bin/honeykey.mjs" },
+  "files": ["bin", "src", "action.yml", "README.md", "LICENSE"],
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "keywords": ["ai-agents", "claude-code", "cursor", "prompt-injection", "honeypot", "honeytoken", "canary", "secrets", "security", "mcp", "llm-security"],
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/joonmoogo/honeykey.git" },
+  "author": "joonmoogo"
+}

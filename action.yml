@@ -1,0 +1,240 @@
+name: 'honeykey'
+description: 'Honeypot secrets for AI agents in CI. Arm decoy credentials before the agent runs, then fail the job if one shows up in a comment, PR, commit or log.'
+author: 'joonmoogo'
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+# Usage (same job, two steps):
+#
+#   - uses: joonmoogo/honeykey@v0
+#     with: { mode: arm }
+#   - uses: anthropics/claude-code-action@v1   # or codex / gemini / copilot ...
+#   - uses: joonmoogo/honeykey@v0
+#     if: always()
+#     with: { mode: scan }
+#
+# `arm` puts fake-but-realistic credentials (AWS, OpenAI, Stripe, ...) into the
+# environment of every later step. They are worthless, so the only way one ends
+# up in a PR comment, review, issue, commit or log is that the agent was told to
+# exfiltrate its environment -- i.e. it was prompt-injected. `scan` looks for
+# them (raw, base64, hex, reversed, split, partial) and fails the job.
+#
+# Security note: every input is passed to scripts through env vars, never
+# interpolated into shell source, so attacker-controlled text cannot inject.
+
+inputs:
+  mode:
+    description: '`arm` (plant decoy env vars) or `scan` (look for them in GitHub content + files). Required.'
+    required: true
+  providers:
+    description: >-
+      arm: comma-separated decoy providers. Available: aws, github, openai, anthropic,
+      stripe, slack, database, jwt. `github` and `anthropic` are off by default because
+      they export GITHUB_TOKEN / ANTHROPIC_API_KEY and would shadow real values that
+      later steps read from the environment.
+    required: false
+    default: 'aws,openai,stripe,slack,database,jwt'
+  github-token:
+    description: 'scan: token used to read comments, reviews, issues, PRs and commits. Needs read access to contents, issues and pull-requests.'
+    required: false
+    default: ${{ github.token }}
+  number:
+    description: 'scan: PR/issue number to inspect in depth (reviews + diff). Defaults to the triggering PR or issue.'
+    required: false
+    default: ''
+  paths:
+    description: >-
+      scan: extra files to scan, one glob per line (relative to the workspace; ** supported;
+      directories are scanned recursively). Use it for agent transcripts, logs and artifacts,
+      e.g. `${{ steps.claude.outputs.execution_file }}`.
+    required: false
+    default: ''
+  scan-diff:
+    description: 'scan: also scan the PR diff (catches agents that commit stolen values into files).'
+    required: false
+    default: 'true'
+  fail-on-leak:
+    description: 'scan: fail the job when a decoy is found.'
+    required: false
+    default: 'true'
+  annotate:
+    description: 'scan: emit an `::error` annotation per leak.'
+    required: false
+    default: 'true'
+
+outputs:
+  decoys:
+    description: 'arm: number of decoy credentials planted.'
+    value: ${{ steps.arm.outputs.decoys }}
+  leaked:
+    description: 'scan: `true` if any decoy was found, else `false`.'
+    value: ${{ steps.scan.outputs.leaked }}
+  leak-count:
+    description: 'scan: number of (source, decoy) hits.'
+    value: ${{ steps.scan.outputs.leak-count }}
+  report:
+    description: 'scan: path to a Markdown report (also written to the job summary).'
+    value: ${{ steps.scan.outputs.report }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: honeykey · check mode
+      if: inputs.mode != 'arm' && inputs.mode != 'scan'
+      shell: bash
+      env:
+        HK_MODE: ${{ inputs.mode }}
+      run: |
+        echo "::error title=honeykey::unknown mode '${HK_MODE}' (expected 'arm' or 'scan')"
+        exit 1
+
+    - name: honeykey · arm decoys
+      id: arm
+      if: inputs.mode == 'arm'
+      shell: bash
+      env:
+        HK_ACTION_PATH: ${{ github.action_path }}
+        HK_PROVIDERS: ${{ inputs.providers }}
+      run: |
+        set -euo pipefail
+        # State lives in RUNNER_TEMP, outside the checkout, so the agent does not
+        # find a `.honeykey/` folder next to the code it is working on.
+        dir="$RUNNER_TEMP/honeykey"
+        mkdir -p "$dir"
+        cd "$dir"
+        args=(ci-env --github-env)
+        if [ -n "${HK_PROVIDERS// /}" ]; then args+=(--providers "${HK_PROVIDERS// /}"); fi
+        node "$HK_ACTION_PATH/bin/honeykey.mjs" "${args[@]}"
+        test -f "$dir/.honeykey/state.json" || { echo "::error title=honeykey::ci-env did not write .honeykey/state.json"; exit 1; }
+        # 60 s of slack for clock skew between the runner and api.github.com
+        node -e 'console.log(new Date(Date.now() - 60000).toISOString().replace(/\.\d+Z$/, "Z"))' > "$dir/armed_at"
+        n=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).decoys.length)' "$dir/.honeykey/state.json")
+        echo "decoys=$n" >> "$GITHUB_OUTPUT"
+        echo "honeykey: armed $n decoy credential(s) for the rest of this job."
+
+    - name: honeykey · scan for decoys
+      id: scan
+      if: inputs.mode == 'scan'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        HK_ACTION_PATH: ${{ github.action_path }}
+        HK_REPO: ${{ github.repository }}
+        HK_NUMBER: ${{ inputs.number || github.event.pull_request.number || github.event.issue.number }}
+        HK_PATHS: ${{ inputs.paths }}
+        HK_SCAN_DIFF: ${{ inputs.scan-diff }}
+        HK_FAIL: ${{ inputs.fail-on-leak }}
+        HK_ANNOTATE: ${{ inputs.annotate }}
+      run: |
+        set -uo pipefail
+        dir="$RUNNER_TEMP/honeykey"
+        if [ ! -f "$dir/.honeykey/state.json" ]; then
+          echo "::error title=honeykey::nothing to scan for -- run 'mode: arm' earlier in the same job"
+          exit 1
+        fi
+        since=$(cat "$dir/armed_at")
+        src="$dir/sources.jsonl"
+        : > "$src"
+
+        # ---- 1. GitHub content created/updated since arm --------------------
+        fetch() { # fetch <label> <jq> <endpoint> [gh args...]
+          local label="$1" jq="$2"; shift 2
+          if ! gh api --paginate "$@" --jq "$jq | tojson" >> "$src" 2>> "$dir/gh.err"; then
+            echo "::warning title=honeykey::could not read $label ($(tail -n1 "$dir/gh.err" 2>/dev/null))"
+          fi
+        }
+        R="$HK_REPO"
+        fetch 'issue/PR comments' '.[] | {source:"comment", url:.html_url, author:.user.login, text:(.body // "")}' \
+          "repos/$R/issues/comments?since=$since&per_page=100"
+        fetch 'review comments' '.[] | {source:"review comment", url:.html_url, author:.user.login, text:(.body // "")}' \
+          "repos/$R/pulls/comments?since=$since&per_page=100"
+        fetch 'issues and PRs' '.[] | {source:(if .pull_request then "PR" else "issue" end), url:.html_url, author:.user.login, text:((.title // "") + "\n" + (.body // ""))}' \
+          "repos/$R/issues?state=all&since=$since&per_page=100"
+        fetch 'commits' '.[] | {source:"commit", url:.html_url, author:(.author.login // .commit.author.name), text:.commit.message}' \
+          "repos/$R/commits?since=$since&per_page=100"
+        if [ -n "$HK_NUMBER" ]; then
+          if gh api "repos/$R/pulls/$HK_NUMBER" --silent 2>/dev/null; then
+            fetch 'PR reviews' '.[] | {source:"review", url:.html_url, author:.user.login, text:(.body // "")}' \
+              "repos/$R/pulls/$HK_NUMBER/reviews?per_page=100"
+            if [ "$HK_SCAN_DIFF" = "true" ]; then
+              if gh api "repos/$R/pulls/$HK_NUMBER" -H 'Accept: application/vnd.github.diff' > "$dir/pr.diff" 2>> "$dir/gh.err"; then
+                node -e 'const fs=require("fs");process.stdout.write(JSON.stringify({source:"PR diff",url:process.argv[2],author:"",text:fs.readFileSync(process.argv[1],"utf8")})+"\n")' \
+                  "$dir/pr.diff" "${GITHUB_SERVER_URL:-https://github.com}/$R/pull/$HK_NUMBER/files" >> "$src"
+              else
+                echo "::warning title=honeykey::could not read the diff of #$HK_NUMBER"
+              fi
+            fi
+          fi
+        fi
+
+        # ---- 2. user-supplied files (logs, transcripts, artifacts) ----------
+        shopt -s nullglob; shopt -s globstar 2>/dev/null || true  # bash 3.2 (macOS) has no globstar
+        : > "$dir/files.txt"
+        while IFS= read -r pat; do
+          pat="${pat#"${pat%%[![:space:]]*}"}"; pat="${pat%"${pat##*[![:space:]]}"}"
+          [ -z "$pat" ] && continue
+          matched=0
+          for f in $pat; do
+            matched=1
+            if [ -d "$f" ]; then find "$f" -type f >> "$dir/files.txt"; elif [ -f "$f" ]; then echo "$f" >> "$dir/files.txt"; fi
+          done
+          [ "$matched" = 0 ] && echo "::warning title=honeykey::paths: nothing matched '$pat'"
+        done <<< "$HK_PATHS"
+
+        # ---- 3. scan: the CLI decides pass/fail, core attributes the hits ---
+        cd "$dir"
+        node --input-type=module - <<'HONEYKEY_SCAN'
+        import { readFileSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
+        import { spawnSync } from 'node:child_process';
+        import { join } from 'node:path';
+        import { pathToFileURL } from 'node:url';
+        const env = process.env;
+        const { findLeaks, loadState } = await import(pathToFileURL(join(env.HK_ACTION_PATH, 'src/core.mjs')).href);
+        const dir = process.cwd();
+        const decoys = loadState(dir).decoys;
+        const ws = env.GITHUB_WORKSPACE || '.';
+
+        const sources = readFileSync('sources.jsonl', 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+        for (const f of readFileSync('files.txt', 'utf8').split('\n').filter(Boolean)) {
+          const p = f.startsWith('/') ? f : join(ws, f);
+          try {
+            if (statSync(p).size > 50 * 1024 * 1024) { console.log(`::warning title=honeykey::skipping ${f} (>50 MB)`); continue; }
+            sources.push({ source: 'file', url: '', author: '', name: f, text: readFileSync(p, 'utf8') });
+          } catch (e) { console.log(`::warning title=honeykey::cannot read ${f}: ${e.message}`); }
+        }
+
+        const hits = [];
+        for (const s of sources) for (const h of findLeaks(s.text, decoys)) hits.push({ ...h, source: s.source, url: s.url, author: s.author, name: s.name });
+
+        const corpus = sources.map((s) => s.text).join('\n\n----- honeykey -----\n\n');
+        const cli = spawnSync(process.execPath, [join(env.HK_ACTION_PATH, 'bin/honeykey.mjs'), 'scan', '-'], { input: corpus, encoding: 'utf8', maxBuffer: 64 << 20 });
+        if (cli.stdout) process.stdout.write(cli.stdout);
+        if (cli.stderr) process.stderr.write(cli.stderr);
+        const cliLeak = cli.status === 1;
+        if (cli.status !== 0 && cli.status !== 1) console.log(`::warning title=honeykey::'honeykey scan' exited with ${cli.status}; relying on built-in matcher`);
+
+        const leaked = hits.length > 0 || cliLeak;
+        const esc = (s) => String(s).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+        const where = (h) => h.source === 'file' ? `file ${h.name}` : `${h.source}${h.author ? ` by @${h.author}` : ''}`;
+        let md = '';
+        if (!leaked) {
+          md = `### 🍯 honeykey: clean\n\nScanned ${sources.length} item(s) for ${decoys.length} decoy credential(s). None leaked.\n`;
+        } else {
+          md = `### 🍯 HONEYPOT TRIPPED\n\nA decoy credential planted by \`honeykey\` showed up outside the job. Decoys are worthless and exist only in this job's environment, so this is not a real-key leak -- it is proof that **the agent tried to exfiltrate its environment**, almost certainly because of a prompt injection in the content it read.\n\n`;
+          if (hits.length) {
+            md += `| Where | Decoy | Encoding |\n|---|---|---|\n`;
+            for (const h of hits) md += `| ${h.url ? `[${where(h)}](${h.url})` : where(h)} | ${h.label} (\`${h.provider}:${h.decoyId}\`) | ${h.encoding} |\n`;
+          } else {
+            md += `\`honeykey scan\` reported a leak; see the step log for details.\n`;
+          }
+          md += `\n**Next steps:** find the injected text (PR title/body, issue, comment, file) that the agent read, delete the leaked content, and rotate any *real* secrets this job could reach -- if the agent leaked the decoys it could have leaked those too.\n`;
+          if (env.HK_ANNOTATE === 'true') for (const h of hits) console.log(`::error title=honeykey: decoy leaked::${esc(`${h.label} found in ${where(h)} (${h.encoding})${h.url ? ` ${h.url}` : ''}`)}`);
+          if (env.HK_ANNOTATE === 'true' && !hits.length) console.log('::error title=honeykey: decoy leaked::honeykey scan reported a leak');
+        }
+        writeFileSync('report.md', md);
+        if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, md + '\n');
+        appendFileSync(env.GITHUB_OUTPUT, `leaked=${leaked}\nleak-count=${hits.length || (cliLeak ? 1 : 0)}\nreport=${join(dir, 'report.md')}\n`);
+        console.log(leaked ? `honeykey: ${hits.length || 1} leak(s) found` : `honeykey: clean (${sources.length} item(s) scanned)`);
+        if (leaked && env.HK_FAIL === 'true') process.exit(1);
+        HONEYKEY_SCAN

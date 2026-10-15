@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160" role="img" aria-labelledby="t">
+  <title id="t">honeykey</title>
+  <defs>
+    <linearGradient id="pot" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffc83d"/>
+      <stop offset="1" stop-color="#e08a00"/>
+    </linearGradient>
+  </defs>
+  <!-- lid rim -->
+  <rect x="38" y="30" width="84" height="16" rx="8" fill="#b86b00"/>
+  <!-- pot body -->
+  <path d="M44 46 h72 c18 14 26 32 26 52 c0 30 -24 44 -62 44 s-62 -14 -62 -44 c0 -20 8 -38 26 -52 z" fill="url(#pot)"/>
+  <!-- honey drip over the rim -->
+  <path d="M44 44 h72 v4 c0 8 -7 8 -7 0 v0 c0 18 -10 18 -10 0 c0 6 -7 6 -7 0 h-24 c0 24 -12 24 -12 0 c0 7 -8 7 -8 0 h-4 z" fill="#ffe08a"/>
+  <!-- keyhole -->
+  <circle cx="80" cy="88" r="13" fill="#3a2200"/>
+  <path d="M73 94 h14 l5 30 h-24 z" fill="#3a2200"/>
+  <!-- shine -->
+  <path d="M40 84 c2 -12 8 -22 16 -28" fill="none" stroke="#fff3c4" stroke-width="6" stroke-linecap="round" opacity=".7"/>
+</svg>

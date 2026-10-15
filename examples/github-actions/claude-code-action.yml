@@ -1,0 +1,47 @@
+# Drop into .github/workflows/claude.yml
+#
+# Claude answers @claude mentions on issues and PRs. honeykey arms decoy
+# credentials before Claude runs and, afterwards, fails the job if any of them
+# shows up in a comment, review, issue/PR body, commit, the PR diff or
+# Claude's own transcript -- the "Comment and Control" exfiltration path.
+name: claude
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [opened, assigned]
+
+jobs:
+  claude:
+    if: contains(github.event.comment.body, '@claude') || contains(github.event.issue.body, '@claude')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Plant decoys: AWS_SECRET_ACCESS_KEY, OPENAI_API_KEY, STRIPE_SECRET_KEY, ...
+      #    are now set for every later step in this job (worthless, fake values).
+      - uses: joonmoogo/honeykey@v0
+        with:
+          mode: arm
+
+      # 2. Run the agent as usual. Its real key comes in via `with:`, not the job env.
+      - uses: anthropics/claude-code-action@v1
+        id: claude
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+
+      # 3. Look for the decoys everywhere the agent could have written to.
+      #    `if: always()` so a failing/aborted agent run is still checked.
+      - uses: joonmoogo/honeykey@v0
+        if: always()
+        with:
+          mode: scan
+          paths: ${{ steps.claude.outputs.execution_file }}
