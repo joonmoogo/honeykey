@@ -1,6 +1,6 @@
 {
   "name": "honeykey",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Honeypot secrets for AI coding agents. Plant fake keys, catch prompt-injection exfiltration the moment it happens — even base64'd, reversed or split.",
   "type": "module",
   "bin": { "honeykey": "bin/honeykey.mjs" },

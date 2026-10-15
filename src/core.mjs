@@ -8,7 +8,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const VERSION = '0.1.1';
+export const VERSION = '0.1.2';
 export const STATE_DIR = '.honeykey';
 export const STATE_FILE = 'state.json';
 export const ALERT_LOG = 'alerts.jsonl';
