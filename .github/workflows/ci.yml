@@ -26,7 +26,11 @@ jobs:
       - name: CLI smoke test
         run: |
           node bin/honeykey.mjs --help
-          echo 'nothing to see here' | node bin/honeykey.mjs scan -
+          cd "$(mktemp -d)"
+          node "$GITHUB_WORKSPACE/bin/honeykey.mjs" ci-env > /dev/null
+          echo 'nothing to see here' | node "$GITHUB_WORKSPACE/bin/honeykey.mjs" scan -
+          grep -o 'ghp_[A-Za-z0-9]*' .honeykey/state.json | head -1 | base64 > leak.txt
+          if node "$GITHUB_WORKSPACE/bin/honeykey.mjs" scan leak.txt; then echo "expected a leak"; exit 1; fi
 
   # End-to-end test of action.yml against this repo (no agent involved).
   action:

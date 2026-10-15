@@ -47,7 +47,7 @@ inputs:
     description: >-
       scan: extra files to scan, one glob per line (relative to the workspace; ** supported;
       directories are scanned recursively). Use it for agent transcripts, logs and artifacts,
-      e.g. `${{ steps.claude.outputs.execution_file }}`.
+      e.g. the `execution_file` output of claude-code-action.
     required: false
     default: ''
   scan-diff:
