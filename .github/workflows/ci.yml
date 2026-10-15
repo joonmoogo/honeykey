@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+      - name: CLI smoke test
+        run: |
+          node bin/honeykey.mjs --help
+          echo 'nothing to see here' | node bin/honeykey.mjs scan -
+
+  # End-to-end test of action.yml against this repo (no agent involved).
+  action:
+    name: action (arm → scan)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: arm
+        id: arm
+        uses: ./
+        with:
+          mode: arm
+
+      - name: decoys are in the environment of later steps
+        run: |
+          test "${{ steps.arm.outputs.decoys }}" -gt 0
+          test -n "$OPENAI_API_KEY" && test -n "$AWS_SECRET_ACCESS_KEY"
+          test ! -e .honeykey   # state must stay out of the workspace
+
+      - name: clean scan passes
+        id: clean
+        uses: ./
+        with:
+          mode: scan
+          scan-diff: 'false'
+          paths: README.md
+
+      - name: simulate an agent leaking a base64'd decoy into a log
+        run: |
+          mkdir -p agent-logs
+          echo "debug: $(printf 'key=%s' "$OPENAI_API_KEY" | base64 -w0)" > agent-logs/run.log
+
+      - name: dirty scan detects it
+        id: dirty
+        uses: ./
+        with:
+          mode: scan
+          scan-diff: 'false'
+          paths: agent-logs/**
+          fail-on-leak: 'false'
+          annotate: 'false'
+
+      - name: assert results
+        run: |
+          test "${{ steps.clean.outputs.leaked }}" = "false"
+          test "${{ steps.dirty.outputs.leaked }}" = "true"
+          test "${{ steps.dirty.outputs.leak-count }}" -ge 1
